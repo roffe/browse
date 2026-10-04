@@ -97,26 +97,40 @@ func hresult(r uintptr) error {
 	return nil
 }
 
-// comInit puts the calling thread in a single threaded apartment, which the
-// dialogs need, and returns the function leaving it again.
+// comInit puts the calling thread, which has to be locked to its goroutine, in
+// a single threaded apartment, which the dialogs need. It returns the function
+// leaving the apartment again.
 func comInit() (func(), error) {
-	runtime.LockOSThread()
 	switch err := windows.CoInitializeEx(0, windows.COINIT_APARTMENTTHREADED|windows.COINIT_DISABLE_OLE1DDE); err {
 	case nil, sFalse:
-		return func() {
-			windows.CoUninitialize()
-			runtime.UnlockOSThread()
-		}, nil
+		return windows.CoUninitialize, nil
 	case rpcEChangedMode:
 		// Somebody made the thread multi threaded, that is not ours to undo.
-		return runtime.UnlockOSThread, nil
+		return func() {}, nil
 	default:
-		runtime.UnlockOSThread()
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 }
 
+// show runs the dialog on a thread of its own that ends with it. A dialog that
+// has been shown can leave the thread inside an apartment, and such a thread
+// must not go on to run other goroutines.
 func show(m mode, o Options) ([]string, error) {
+	type result struct {
+		paths []string
+		err   error
+	}
+	done := make(chan result)
+	go func() {
+		runtime.LockOSThread() // never unlocked, the thread ends with the goroutine
+		paths, err := showOnThread(m, o)
+		done <- result{paths, err}
+	}()
+	r := <-done
+	return r.paths, r.err
+}
+
+func showOnThread(m mode, o Options) ([]string, error) {
 	done, err := comInit()
 	if err != nil {
 		return nil, err

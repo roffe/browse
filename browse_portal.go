@@ -117,9 +117,9 @@ func show(m mode, o Options) ([]string, error) {
 }
 
 func portalPaths(results map[string]dbus.Variant) ([]string, error) {
-	var uris []string
-	if err := results["uris"].Store(&uris); err != nil {
-		return nil, fmt.Errorf("browse: portal response: %w", err)
+	uris, ok := results["uris"].Value().([]string)
+	if !ok {
+		return nil, errors.New("browse: portal response has no list of files")
 	}
 	paths := make([]string, 0, len(uris))
 	for _, uri := range uris {
