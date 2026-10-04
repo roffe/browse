@@ -25,12 +25,16 @@ const (
 )
 
 // press pushes a button of the dialog with the given title until told to stop.
-// It gives up and cancels the dialog after ten seconds.
-func press(title string, button uintptr, stop <-chan struct{}) {
+// It gives up and cancels the dialog after ten seconds. When stopped it sends
+// the working directory the process had while the dialog was open, which is
+// start unless the dialog moved it.
+func press(title string, button uintptr, stop <-chan struct{}, start string, seen chan<- string) {
 	name, _ := windows.UTF16PtrFromString(title)
+	wd := ""
 	for i := 0; ; i++ {
 		select {
 		case <-stop:
+			seen <- wd
 			return
 		case <-time.After(100 * time.Millisecond):
 		}
@@ -38,6 +42,9 @@ func press(title string, button uintptr, stop <-chan struct{}) {
 			button = idCancel
 		}
 		if hwnd, _, _ := procFindWindow.Call(0, uintptr(unsafe.Pointer(name))); hwnd != 0 {
+			if now, _ := os.Getwd(); wd == "" || now != start {
+				wd = now
+			}
 			procPostMessage.Call(hwnd, wmCommand, button, 0)
 		}
 	}
@@ -55,6 +62,10 @@ func TestShow(t *testing.T) {
 		t.Fatal(err)
 	}
 	filters := []Filter{{Name: "Binary", Extensions: []string{"bin"}}, {Name: "All"}}
+	start, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name   string
@@ -73,9 +84,18 @@ func TestShow(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			title := "browse test " + tt.name
 			stop := make(chan struct{})
-			go press(title, tt.button, stop)
+			seen := make(chan string, 1)
+			go press(title, tt.button, stop, start, seen)
 			got, err := show(tt.mode, Options{Title: title, Dir: dir, Name: tt.file, Filters: filters})
 			close(stop)
+
+			// The dialog shows dir, the process has to stay where it was.
+			if during := <-seen; during != start {
+				t.Errorf("working directory was %q while the dialog was open, want %q", during, start)
+			}
+			if after, _ := os.Getwd(); after != start {
+				t.Errorf("working directory is %q after the dialog, want %q", after, start)
+			}
 
 			if tt.want == "" {
 				if !errors.Is(err, ErrCancelled) {
